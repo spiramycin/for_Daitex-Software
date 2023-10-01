@@ -1,0 +1,133 @@
+from binance.client import Client
+from datetime import datetime, timedelta
+import pandas as pd
+import numpy as np
+
+
+# Ініціалізація Binance API
+client = Client("YOUR_API_KEY", "YOUR_API_SECRET")
+
+# Отримання історичних даних
+symbol = "BTCUSDT"
+interval = Client.KLINE_INTERVAL_1MINUTE
+start_date = (datetime.now() - timedelta(days=4*365)).strftime("%d %b, %Y")
+klines = client.futures_klines(symbol=symbol, interval=interval, startTime=start_date)
+
+# Перетворення даних у DataFrame
+data = []
+for kline in klines:
+    data.append([kline[0], float(kline[1]), float(kline[2]), float(kline[3]), float(kline[4]), float(kline[5])])
+
+df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+
+# Збереження у .csv файл
+df.to_csv('binance_data.csv', index=False)
+
+
+# RSIBANDS_LB з PineScript на Python
+def calculate_rsibands_lb(close, obLevel=70, osLevel=30, length=14):
+    ep = 2 * length - 1
+    auc = np.ema(np.maximum(close - np.roll(close, 1), 0), span=ep)
+    adc = np.ema(np.maximum(np.roll(close, 1) - close, 0), span=ep)
+
+    x1 = (length - 1) * ((adc * obLevel) / (100 - obLevel) - auc)
+    ub = np.where(x1 >= 0, close + x1, close + x1 * (100 - obLevel) / obLevel)
+
+    x2 = (length - 1) * ((adc * osLevel) / (100 - osLevel) - auc)
+    lb = np.where(x2 >= 0, close + x2, close + x2 * (100 - osLevel) / osLevel)
+
+    return ub, lb
+
+# Приклад використання
+# ub, lb = calculate_rsibands_lb(close)
+
+# Період CCI
+cci_period = 30
+
+# Припустимі параметри
+obLevel = 70
+osLevel = 30
+length = 14
+
+# Розрахунок CCI
+def calculate_cci(close, period=cci_period):
+    cci = talib.CCI(close, timeperiod=period)
+    return cci
+
+def get_signals(close_prices):
+    signals = []
+
+    ub, lb = calculate_rsibands_lb(close_prices, obLevel, osLevel, length)
+    cci_values = calculate_cci(close_prices)
+
+    for i in range(len(close_prices)):
+        if i == 0:
+            signals.append(False)
+            continue
+
+        if close_prices[i] > ub[i] and cci_values[i] < -100:
+            signals.append({"action": True, "type": "LONG", "entry_price": close_prices[i], "TP": close_prices[i] * 1.01, "SL": close_prices[i] * 0.996})
+        elif close_prices[i] < lb[i] and cci_values[i] > 120:
+            signals.append({"action": True, "type": "SHORT", "entry_price": close_prices[i], "TP": close_prices[i] * 0.989, "SL": close_prices[i] * 1.005})
+        else:
+            signals.append(False)
+
+    return signals
+
+# Отримання сигналів
+signals = get_signals(close_prices)
+
+# Друкуємо сигнали
+for i, signal in enumerate(signals):
+    if signal:
+        print(f"Signal at index {i}: {signal}")
+# Ці тепер містять значення CCI
+# print(cci_values)
+
+
+# Бектестер
+def calculate_metrics(signals, close_prices):
+    total_trades = 0
+    profitable_trades = 0
+    total_profit = 0
+    total_loss = 0
+
+    for i, signal in enumerate(signals):
+        if signal:
+            total_trades += 1
+            entry_price = signal["entry_price"]
+            tp_price = signal["TP"]
+            sl_price = signal["SL"]
+
+            if signal["type"] == "LONG":
+                if tp_price >= close_prices[i]:
+                    total_profit += (tp_price - entry_price) / entry_price
+                    profitable_trades += 1
+                elif sl_price <= close_prices[i]:
+                    total_loss += (entry_price - sl_price) / entry_price
+            elif signal["type"] == "SHORT":
+                if tp_price <= close_prices[i]:
+                    total_profit += (entry_price - tp_price) / entry_price
+                    profitable_trades += 1
+                elif sl_price >= close_prices[i]:
+                    total_loss += (sl_price - entry_price) / entry_price
+
+    winrate = profitable_trades / total_trades if total_trades > 0 else 0
+    profit_factor = abs(total_profit) / abs(total_loss) if total_loss != 0 else 0
+
+    return {
+        "total_trades": total_trades,
+        "profitable_trades": profitable_trades,
+        "total_profit": total_profit,
+        "total_loss": total_loss,
+        "winrate": winrate,
+        "profit_factor": profit_factor
+    }
+
+# Розрахунок метрик
+metrics = calculate_metrics(signals, close_prices)
+
+# Друкуємо метрики
+print("Metrics:")
+print(metrics)
